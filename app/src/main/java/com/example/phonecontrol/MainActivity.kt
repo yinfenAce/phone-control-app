@@ -75,7 +75,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-private const val OWNER_NAME = "映天"
+private const val OWNER_NAME = "银凤Ace"
+private const val AUTHOR_NAME = "银凤Ace"
 private val Red = Color(0xFFD94A4A)
 private val Amber = Color(0xFFD6953C)
 private val Green = Color(0xFF4F9A63)
@@ -92,6 +93,16 @@ private val darkScheme = darkColorScheme(
     onBackground = TextMain,
     surface = Surface2,
     onSurface = TextMain,
+    surfaceVariant = Surface2,
+    onSurfaceVariant = TextDim,
+    surfaceContainer = Surface2,
+    surfaceContainerLow = Bg,
+    surfaceContainerLowest = Bg,
+    surfaceContainerHigh = Surface2,
+    surfaceContainerHighest = Surface2,
+    surfaceDim = Bg,
+    surfaceBright = Surface2,
+    outline = Color(0x33FFFFFF),
 )
 
 data class Profile(val name: String = "本机用户", val developer: Boolean = false)
@@ -121,8 +132,8 @@ class MainActivity : ComponentActivity() {
 private fun PhoneControlApp() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("phone_control", Context.MODE_PRIVATE) }
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    var showProfile by rememberSaveable { mutableStateOf(false) }
+    var tab by remember { mutableIntStateOf(0) }
+    var showProfile by remember { mutableStateOf(false) }
     var profile by remember {
         mutableStateOf(
             Profile(
@@ -484,6 +495,9 @@ private fun TasksScreen(prefs: android.content.SharedPreferences) {
     }
     if (adding) {
         AlertDialog(
+            containerColor = Surface2,
+            titleContentColor = TextMain,
+            textContentColor = TextMain,
             onDismissRequest = { adding = false },
             title = { Text("新建任务") },
             text = {
@@ -589,6 +603,7 @@ private fun ProfileScreen(profile: Profile, onBack: () -> Unit, onSave: (Profile
                 Text("开发者称号仅对所有者账号显示。", color = TextDim, fontSize = 10.sp)
             }
             Spacer(Modifier.height(18.dp))
+            Text("作者：$AUTHOR_NAME", color = TextDim, fontSize = 10.sp)
             Text("账号只保存在本机，不联网、不上传。", color = TextDim, fontSize = 10.sp)
         }
     }
