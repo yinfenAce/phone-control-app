@@ -9,6 +9,7 @@ import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
 import android.os.StatFs
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -43,6 +44,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -72,6 +75,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+private const val OWNER_NAME = "映天"
 private val Red = Color(0xFFD94A4A)
 private val Amber = Color(0xFFD6953C)
 private val Green = Color(0xFF4F9A63)
@@ -91,7 +95,7 @@ private val darkScheme = darkColorScheme(
 )
 
 data class Profile(val name: String = "本机用户", val developer: Boolean = false)
-data class AppRow(val label: String, val pkg: String, val permCount: Int, val risky: Int)
+data class AppRow(val label: String, val pkg: String, val permCount: Int, val risky: Int, val perms: List<String> = emptyList())
 data class TaskItem(val id: Long, val title: String, val due: String, val done: Boolean)
 data class DocItem(val name: String, val size: Long, val isDir: Boolean)
 
@@ -123,7 +127,7 @@ private fun PhoneControlApp() {
         mutableStateOf(
             Profile(
                 prefs.getString("profile_name", "本机用户") ?: "本机用户",
-                prefs.getBoolean("profile_developer", false)
+                (prefs.getString("profile_name", "本机用户") ?: "本机用户") == OWNER_NAME
             )
         )
     }
@@ -132,15 +136,17 @@ private fun PhoneControlApp() {
     if (showProfile) {
         ProfileScreen(profile, onBack = { showProfile = false }, onSave = {
             profile = it
-            prefs.edit().putString("profile_name", it.name).putBoolean("profile_developer", it.developer).apply()
+            prefs.edit().putString("profile_name", it.name).putBoolean("profile_developer", it.name == OWNER_NAME).apply()
             showProfile = false
         })
         return
     }
 
     Scaffold(
+        containerColor = Bg,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg, titleContentColor = TextMain, actionIconContentColor = TextDim),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(titles[tab], fontWeight = FontWeight.SemiBold)
@@ -180,7 +186,7 @@ private fun PhoneControlApp() {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize().background(Bg)) {
             when (tab) {
-                0 -> Dashboard(profile, onOpenProfile = { showProfile = true })
+                0 -> Dashboard(profile, onOpenProfile = { showProfile = true }, onOpenApps = { tab = 2 })
                 1 -> TerminalScreen()
                 2 -> AppsScreen()
                 3 -> FilesScreen()
@@ -237,7 +243,7 @@ private fun RowLine(
 }
 
 @Composable
-private fun Dashboard(profile: Profile, onOpenProfile: () -> Unit) {
+private fun Dashboard(profile: Profile, onOpenProfile: () -> Unit, onOpenApps: () -> Unit) {
     val context = LocalContext.current
     val battery = remember {
         val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
@@ -268,7 +274,7 @@ private fun Dashboard(profile: Profile, onOpenProfile: () -> Unit) {
             Section("设备", "只读")
         }
         item { RowLine("设", "本机", "PEDM00 · Android ${android.os.Build.VERSION.RELEASE}", "快照") }
-        item { RowLine("应", "已安装应用", "$appCount 个 · 只读列表", onClick = onOpenProfile) }
+        item { RowLine("应", "已安装应用", "$appCount 个 · 只读列表", onClick = onOpenApps) }
         item { Section("说明", "本地") }
         item {
             Text(
@@ -291,12 +297,23 @@ private fun Stat(k: String, v: String) {
 private fun AppsScreen() {
     val context = LocalContext.current
     var query by rememberSaveable { mutableStateOf("") }
-    val apps by produceState(initialValue = emptyList<AppRow>(), query) {
-        value = withContext(Dispatchers.IO) { loadApps(context) }
+    var apps by remember { mutableStateOf<List<AppRow>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var selected by remember { mutableStateOf<AppRow?>(null) }
+
+    LaunchedEffect(Unit) {
+        error = null
+        apps = withContext(Dispatchers.IO) {
+            runCatching { loadApps(context) }.onFailure { error = it.message }.getOrDefault(emptyList())
+        }
     }
-    val filtered = apps.filter {
-        query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true)
+
+    val current = selected
+    if (current != null) {
+        AppDetail(current, onBack = { selected = null })
+        return
     }
+
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query,
@@ -305,15 +322,72 @@ private fun AppsScreen() {
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(12.dp, 8.dp)
         )
-        Text("${filtered.size} 个应用 · 只读", color = TextDim, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 16.dp))
+        val list = apps
+        when {
+            list == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Red, strokeWidth = 2.dp)
+                    Spacer(Modifier.height(10.dp))
+                    Text("读取应用列表…", color = TextDim, fontSize = 10.sp)
+                }
+            }
+            error != null -> Text("读取失败：$error", color = Red, fontSize = 10.sp, modifier = Modifier.padding(16.dp))
+            list.isEmpty() -> Text("没有读取到应用。请确认系统允许查询应用列表。", color = TextDim, fontSize = 10.sp, modifier = Modifier.padding(16.dp))
+            else -> {
+                val filtered = list.filter { query.isBlank() || it.label.contains(query, true) || it.pkg.contains(query, true) }
+                Text("${filtered.size} 个应用 · 只读", color = TextDim, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 16.dp))
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(filtered, key = { it.pkg }) { app ->
+                        RowLine(
+                            leading = app.label.take(1),
+                            title = app.label,
+                            sub = "${app.pkg} · ${app.permCount} 项权限",
+                            trailing = if (app.risky > 0) "高 ${app.risky}" else "正常",
+                            trailingColor = if (app.risky > 0) Red else Green,
+                            onClick = { selected = app }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppDetail(app: AppRow, onBack: () -> Unit) {
+    val context = LocalContext.current
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp, 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onBack) { Text("返回") }
+            Spacer(Modifier.width(4.dp))
+            Text(app.label, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Divider(color = Line)
+        Column(Modifier.padding(16.dp)) {
+            Text(app.pkg, color = TextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(8.dp))
+            Text(if (app.risky > 0) "高风险权限 ${app.risky} 项" else "未发现高风险权限", color = if (app.risky > 0) Red else Green, fontSize = 11.sp)
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${app.pkg}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { context.startActivity(intent) }
+            }, modifier = Modifier.fillMaxWidth()) { Text("打开系统应用设置") }
+            Spacer(Modifier.height(14.dp))
+            Text("权限（只读）", color = TextDim, fontSize = 10.sp)
+        }
         LazyColumn(Modifier.fillMaxSize()) {
-            items(filtered, key = { it.pkg }) { app ->
+            items(app.perms.ifEmpty { listOf("未声明权限") }) { p ->
+                val risky = p in RISKY
                 RowLine(
-                    leading = app.label.take(1),
-                    title = app.label,
-                    sub = "${app.pkg} · ${app.permCount} 项权限",
-                    trailing = if (app.risky > 0) "高 ${app.risky}" else "正常",
-                    trailingColor = if (app.risky > 0) Red else Green
+                    leading = if (risky) "!" else "·",
+                    title = p.substringAfterLast('.').replace('_', ' '),
+                    sub = p,
+                    trailing = if (risky) "需确认" else null,
+                    trailingColor = Red
                 )
             }
         }
@@ -324,6 +398,7 @@ private fun AppsScreen() {
 private fun FilesScreen() {
     val context = LocalContext.current
     var tree by remember { mutableStateOf<Uri?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             runCatching {
@@ -342,13 +417,21 @@ private fun FilesScreen() {
     Column(Modifier.fillMaxSize()) {
         Text("SAF 目录 · 只读", color = TextDim, fontSize = 9.sp, modifier = Modifier.padding(16.dp, 10.dp))
         OutlinedButton(onClick = { picker.launch(null) }, modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text("选择目录")
+            Text(if (tree == null) "选择目录" else "更换目录")
         }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            placeholder = { Text("搜索文件名", fontSize = 11.sp) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+        )
         if (tree == null) {
             Text("未选择目录。只访问你授权的目录，不申请全盘权限。", color = TextDim, fontSize = 10.sp, modifier = Modifier.padding(16.dp))
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(docs, key = { it.name + it.size }) { d ->
+                val filtered = docs.filter { query.isBlank() || it.name.contains(query, true) }
+                items(filtered, key = { it.name + it.size }) { d ->
                     RowLine(
                         leading = if (d.isDir) "▸" else "·",
                         title = d.name,
@@ -429,7 +512,7 @@ private fun TerminalScreen() {
     var command by rememberSaveable { mutableStateOf("id") }
     var output by remember { mutableStateOf("") }
     var typed by remember { mutableStateOf("") }
-    var typing by remember { mutableStateOf(true) }
+    var typing by remember { mutableStateOf(false) }
     var running by remember { mutableStateOf(false) }
 
     LaunchedEffect(output, typing) {
@@ -467,6 +550,7 @@ private fun TerminalScreen() {
             }) { Text(if (running) "运行中" else "运行") }
             OutlinedButton(onClick = { typing = false; typed = output }) { Text("跳过动画") }
             OutlinedButton(onClick = { output = ""; typed = "" }) { Text("清空") }
+            OutlinedButton(onClick = { typing = !typing }) { Text(if (typing) "动画开" else "动画关") }
         }
         Divider(color = Line)
         Text("输出", color = TextDim, fontSize = 9.sp, modifier = Modifier.padding(vertical = 6.dp))
@@ -483,7 +567,7 @@ private fun TerminalScreen() {
 @Composable
 private fun ProfileScreen(profile: Profile, onBack: () -> Unit, onSave: (Profile) -> Unit) {
     var name by remember { mutableStateOf(profile.name) }
-    var dev by remember { mutableStateOf(profile.developer) }
+    val isOwner = name == OWNER_NAME
     Column(Modifier.fillMaxSize().background(Bg)) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
@@ -492,18 +576,17 @@ private fun ProfileScreen(profile: Profile, onBack: () -> Unit, onSave: (Profile
         ) {
             TextButton(onClick = onBack) { Text("返回") }
             Text("本机账号", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            TextButton(onClick = { onSave(Profile(name.ifBlank { "本机用户" }, dev)) }) { Text("保存") }
+            TextButton(onClick = { onSave(Profile(name.ifBlank { "本机用户" }, isOwner)) }) { Text("保存") }
         }
         Divider(color = Line)
         Column(Modifier.padding(16.dp)) {
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("昵称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(14.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("开发者称号", color = TextMain, fontSize = 13.sp)
-                    Text("仅本机徽章，不代表系统权限", color = TextDim, fontSize = 9.sp)
-                }
-                Switch(checked = dev, onCheckedChange = { dev = it })
+            if (isOwner) {
+                Text("开发者", color = Red, fontSize = 11.sp)
+                Text("仅所有者账号显示；不是权限开关。", color = TextDim, fontSize = 9.sp)
+            } else {
+                Text("开发者称号仅对所有者账号显示。", color = TextDim, fontSize = 10.sp)
             }
             Spacer(Modifier.height(18.dp))
             Text("账号只保存在本机，不联网、不上传。", color = TextDim, fontSize = 10.sp)
@@ -522,11 +605,18 @@ private fun formatBytes(bytes: Long): String {
 private fun loadApps(context: Context): List<AppRow> {
     val pm = context.packageManager
     return runCatching {
-        pm.getInstalledApplications(0).map { ai ->
-            val info = runCatching { pm.getPackageInfo(ai.packageName, PackageManager.GET_PERMISSIONS) }.getOrNull()
-            val perms = info?.requestedPermissions?.toList() ?: emptyList()
-            AppRow(ai.loadLabel(pm).toString(), ai.packageName, perms.size, perms.count { it in RISKY })
-        }.sortedBy { it.label }
+        val packages = pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
+        packages.take(200).map { info ->
+            val app = info.applicationInfo
+            val perms = info.requestedPermissions?.toList() ?: emptyList()
+            AppRow(
+                label = runCatching { app?.loadLabel(pm)?.toString() }.getOrNull() ?: info.packageName,
+                pkg = info.packageName,
+                permCount = perms.size,
+                risky = perms.count { it in RISKY },
+                perms = perms
+            )
+        }.sortedBy { it.label.lowercase() }
     }.getOrDefault(emptyList())
 }
 
